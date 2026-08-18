@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "famas.media-plus",
+  "name": "My Media",
+  "version": "1.0.0",
+  "author": "famas",
+  "description": "A fork of omarchy.media, with visual modifications and functionality enhancements.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Media Plus",
+    "description": "MPRIS now-playing with playback controls",
+    "category": "Media",
+    "allowMultiple": false
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.media"
+  }
+}
