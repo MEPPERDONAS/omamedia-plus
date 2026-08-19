@@ -16,12 +16,23 @@ Item {
 
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
+  readonly property var links: Pipewire.links ? Pipewire.links.values : []
   readonly property var playbackStreams: {
     var list = []
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i]
       if (n && n.isStream && isPlaybackStream(n) && n.audio) list.push(n)
     }
+    return list
+  }
+  readonly property var sinks: {
+    var list = []
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i]
+      if (n && n.isSink && !n.isStream && n.audio && list.indexOf(n) < 0) list.push(n)
+    }
+    var defaultSink = Pipewire.defaultAudioSink
+    if (defaultSink && list.indexOf(defaultSink) < 0) list.unshift(defaultSink)
     return list
   }
   readonly property var sourcePlayers: orderedSourcePlayers()
@@ -54,6 +65,14 @@ Item {
     return MediaModel.canHandleAction(player, action)
   }
 
+  function nextLoopState(loopState) {
+    return MediaModel.nextLoopState(loopState)
+  }
+
+  function loopLabel(loopState) {
+    return MediaModel.loopLabel(loopState)
+  }
+
   function canCycleSource(player) {
     return MediaModel.canCycleSource(player)
   }
@@ -80,6 +99,83 @@ Item {
 
   function playerHasPlaybackStream(player) {
     return MediaModel.playerHasPlaybackStream(player, playbackStreams)
+  }
+
+  function sinkLabel(node) {
+    return MediaModel.sinkLabel(node)
+  }
+
+  function sinkGlyph(node) {
+    return MediaModel.sinkGlyph(node)
+  }
+
+  // All PipeWire playback streams that represent the given MPRIS player.
+  // Label matching first (e.g. "chromium" for a browser with several tabs);
+  // generic streams (Spotify publishes its stream as "audio-src") fall back
+  // to the player that no other non-generic stream already represents.
+  function playbackStreamsForPlayer(player) {
+    var list = []
+    var playerKey = MediaModel.streamLabelKey(MediaModel.playerAppLabel(player))
+    if (!playerKey) return list
+
+    for (var i = 0; i < playbackStreams.length; i++) {
+      var stream = playbackStreams[i]
+      var streamKey = MediaModel.streamLabelKey(MediaModel.rawStreamLabel(stream))
+      if (!streamKey) continue
+      if (streamKey === playerKey
+          || streamKey.indexOf(playerKey) !== -1
+          || playerKey.indexOf(streamKey) !== -1)
+        list.push(stream)
+    }
+    if (list.length > 0) return list
+
+    var generic = []
+    for (var j = 0; j < playbackStreams.length; j++) {
+      var key = MediaModel.streamLabelKey(MediaModel.rawStreamLabel(playbackStreams[j]))
+      if (key === "audiosrc") generic.push(playbackStreams[j])
+    }
+    if (generic.length === 0) return list
+
+    var owned = {}
+    for (var k = 0; k < players.length; k++) {
+      var other = players[k]
+      if (MediaModel.playerKey(other) === MediaModel.playerKey(player)) continue
+      var otherKey = MediaModel.streamLabelKey(MediaModel.playerAppLabel(other))
+      if (!otherKey) continue
+      for (var m = 0; m < playbackStreams.length; m++) {
+        var streamKey2 = MediaModel.streamLabelKey(MediaModel.rawStreamLabel(playbackStreams[m]))
+        if (!streamKey2 || streamKey2 === "audiosrc") continue
+        if (streamKey2 === otherKey
+            || streamKey2.indexOf(otherKey) !== -1
+            || otherKey.indexOf(streamKey2) !== -1)
+          owned[otherKey] = true
+      }
+    }
+
+    return owned[playerKey] ? [] : generic
+  }
+
+  // The sink a playback stream is currently routed to, resolved from the
+  // active PipeWire link (link.source is the stream, link.target the sink).
+  function sinkForStream(stream) {
+    if (!stream) return null
+    var fallback = null
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i]
+      if (!link || link.source !== stream) continue
+      var target = link.target
+      if (!target || !target.isSink) continue
+      if (link.state === 6) return target
+      if (!fallback) fallback = target
+    }
+    return fallback || Pipewire.defaultAudioSink || null
+  }
+
+  function sinkByName(name) {
+    if (!name) return null
+    for (var i = 0; i < sinks.length; i++)
+      if (String(sinks[i].name) === name) return sinks[i]
+    return null
   }
 
   function playerKey(player) {
@@ -225,7 +321,7 @@ Item {
       }
     }
 
-    if (preferred && preferred.isPlaying) return preferred
+    if (preferred && (preferred.isPlaying || hasTrackMetadata(preferred))) return preferred
     var streamCandidate = streamPlayer || streamProxy
     var streamPreferred = preferred && playerHasPlaybackStream(preferred) ? preferred : null
     return oldestPlayingPlayer(true) || oldestPlayingPlayer(false) || streamPreferred || streamCandidate || preferred || trackPlayer || trackProxy || controllablePlayer || controllableProxy || identityPlayer || identityProxy || null
@@ -348,6 +444,80 @@ Item {
     return true
   }
 
+  // ---- per-source output routing ----
+
+  // A source's output device can only be changed when it actually has a
+  // PipeWire playback stream to route; Quickshell's Pipewire service exposes
+  // no stream-routing API, so this goes through pipewire-pulse the same way
+  // omarchy's own audio panel does.
+  property var pendingMove: null
+
+  function moveStreamsToSink(player, sinkName) {
+    var sink = sinkByName(String(sinkName || ""))
+    var streams = playbackStreamsForPlayer(player)
+    if (!sink || !sink.name || streams.length === 0) return false
+
+    var matches = []
+    for (var i = 0; i < streams.length; i++) {
+      var p = nodeProps(streams[i])
+      matches.push({
+        pid: String(p["application.process.id"] || ""),
+        nodeName: String(p["node.name"] || ""),
+        appName: String(p["application.name"] || "")
+      })
+    }
+
+    pendingMove = { sinkName: sink.name, matches: matches }
+    if (!sinkInputsProc.running) sinkInputsProc.running = true
+
+    if (shell) shell.summon("omarchy.osd", JSON.stringify({
+      icon: sinkGlyph(sink),
+      message: "Output · " + sinkLabel(sink)
+    }))
+    return true
+  }
+
+  function moveSinkInputs(move, text) {
+    var lines = String(text || "").split("\n")
+    var currentId = ""
+    var currentPid = ""
+    var currentNode = ""
+    var currentApp = ""
+
+    function flush() {
+      if (!currentId) return
+      for (var i = 0; i < move.matches.length; i++) {
+        var m = move.matches[i]
+        if ((m.pid && m.pid === currentPid)
+            || (m.nodeName && m.nodeName === currentNode)
+            || (m.appName && m.appName === currentApp)) {
+          Quickshell.execDetached(["pactl", "move-sink-input", currentId, move.sinkName])
+          return
+        }
+      }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      var idMatch = /^Sink Input #(\d+)/.exec(line)
+      if (idMatch) {
+        flush()
+        currentId = idMatch[1]
+        currentPid = ""
+        currentNode = ""
+        currentApp = ""
+        continue
+      }
+      var pidMatch = /^application\.process\.id = "([^"]*)"/.exec(line)
+      if (pidMatch) { currentPid = pidMatch[1]; continue }
+      var nodeMatch = /^node\.name = "([^"]*)"/.exec(line)
+      if (nodeMatch) { currentNode = nodeMatch[1]; continue }
+      var appMatch = /^application\.name = "([^"]*)"/.exec(line)
+      if (appMatch) { currentApp = appMatch[1]; continue }
+    }
+    flush()
+  }
+
   function playerForAction(action, targetKey) {
     var targeted = playerForKey(targetKey)
     if (targeted) return targeted
@@ -422,6 +592,21 @@ Item {
         player.togglePlaying()
         handled = true
       }
+    } else if (action === "shuffle") {
+      actionLabel = player && player.shuffle ? "Shuffle off" : "Shuffle on"
+      iconName = player && player.shuffle ? "media-shuffle-off" : "media-shuffle"
+      if (player && player.shuffleSupported) {
+        player.shuffle = !player.shuffle
+        handled = true
+      }
+    } else if (action === "loop") {
+      var nextLoop = player ? MediaModel.nextLoopState(player.loopState) : 0
+      actionLabel = MediaModel.loopLabel(nextLoop)
+      iconName = nextLoop === 1 ? "media-repeat-one" : nextLoop === 2 ? "media-repeat" : "media-repeat-off"
+      if (player && player.loopSupported) {
+        player.loopState = nextLoop
+        handled = true
+      }
     }
 
     if (handled && key) preferredPlayerKey = key
@@ -454,6 +639,21 @@ Item {
   }
 
   PwObjectTracker { objects: root.playbackStreams }
+  PwObjectTracker { objects: root.links }
+
+  Process {
+    id: sinkInputsProc
+    command: ["pactl", "list", "sink-inputs"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var move = root.pendingMove
+        if (!move) return
+        root.pendingMove = null
+        root.moveSinkInputs(move, text)
+      }
+    }
+  }
 
   function statusJson() {
     var p = activePlayer
@@ -469,7 +669,11 @@ Item {
       artUrl: p && p.trackArtUrl ? p.trackArtUrl : "",
       canGoNext: p ? !!p.canGoNext : false,
       canGoPrevious: p ? !!p.canGoPrevious : false,
-      canTogglePlaying: p ? !!p.canTogglePlaying : false
+      canTogglePlaying: p ? !!p.canTogglePlaying : false,
+      shuffle: p ? !!p.shuffle : false,
+      shuffleSupported: p ? !!p.shuffleSupported : false,
+      loopState: p ? Number(p.loopState || 0) : 0,
+      loopSupported: p ? !!p.loopSupported : false
     })
   }
 
@@ -498,6 +702,14 @@ Item {
 
     function pause(): string {
       return root.runAction("pause", true) ? "ok" : "unhandled"
+    }
+
+    function shuffle(): string {
+      return root.runAction("shuffle", true) ? "ok" : "unhandled"
+    }
+
+    function loop(): string {
+      return root.runAction("loop", true) ? "ok" : "unhandled"
     }
 
     function sourceNext(): string {

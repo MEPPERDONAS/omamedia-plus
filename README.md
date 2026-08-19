@@ -2,10 +2,11 @@
 
 ![Media Plus preview](Preview.jpg)
 
-Bar widget for Omarchy — a fork of `omarchy.media` with visual modifications and functionality enhancements: the classic MPRIS now-playing widget plus a **source badge** that shows which app the audio comes from and can jump straight to it.
+Bar widget for Omarchy — a fork of `omarchy.media` with visual modifications and functionality enhancements: the classic MPRIS now-playing widget plus per-source audio routing and a **source badge** that shows which app the audio comes from and can jump straight to it.
 
 ## Features
 
+- **Media Output**: choose a specific audio output for each media source independently. In the popup, every source row shows its current output and provides a menu to route that source to any available PipeWire sink without changing the other sources.
 - **Now playing**: shows the current track title + artist in the bar, with a scrolling label for long titles.
 - **Playback controls**: click to play/pause, middle-click (or scroll down) for next track, scroll up for previous track.
 - **Popup card** (right-click): album art with rounded mask and gradient overlay, track title/artist/album, progress bar, and previous/play-pause/next buttons.
@@ -47,11 +48,13 @@ That removes the plugin and its bar entry.
 - **Right click** — open/close the popup card.
 - **Middle click / scroll down** — next track.
 - **Scroll up** — previous track.
+- **Media Output** — in the popup, open the output selector on a source row and choose the sink that should receive that source's audio. The selector is available when multiple outputs are detected.
 - **Popup top-right pill** — shows the audio source; click it to focus the source app's window (via `omarchy-hyprland-focus-app`, matching the Hyprland window class case-insensitively).
 
 ## Requirements
 
 - Omarchy (shell `quickshell`).
+- PipeWire sinks exposed through Quickshell for per-source audio routing.
 - Font with Nerd Fonts icons for the playback glyphs.
 - The `omarchy-hyprland-focus-app` command (included in Omarchy) for the source badge focus action.
 

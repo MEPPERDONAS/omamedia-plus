@@ -20,6 +20,7 @@ BarWidget {
   readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
 
   property bool popupOpen: false
+  property string openSinkMenu: ""
 
   // ------------------------------------------------------- audio source
   //
@@ -363,7 +364,7 @@ BarWidget {
               width: parent.width - sourceBadge.width - Style.space(12)
 
               Text {
-                text: root.title || "Nothing playing"
+                text: root.title
                 color: "white"
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.title
@@ -425,6 +426,18 @@ BarWidget {
             spacing: Style.space(6)
 
             Button {
+              iconText: "󰒝"
+              foreground: "white"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              active: root.activePlayer && root.activePlayer.shuffle
+              enabled: root.activePlayer && root.activePlayer.shuffleSupported
+              opacity: !enabled ? 0.4 : (active ? 1.0 : 0.6)
+              tooltipText: root.activePlayer && root.activePlayer.shuffle ? "Shuffle on" : "Shuffle off"
+              onClicked: if (root.mediaService) root.mediaService.runAction("shuffle", false, root.mediaService.playerKey(root.activePlayer))
+            }
+
+            Button {
               iconText: "󰒮"
               foreground: "white"
               horizontalPadding: Style.spacing.controlPaddingX
@@ -453,6 +466,18 @@ BarWidget {
               enabled: root.activePlayer && root.activePlayer.canGoNext
               opacity: enabled ? 1.0 : 0.4
               onClicked: if (root.mediaService) root.mediaService.runAction("next", false, root.mediaService.playerKey(root.activePlayer))
+            }
+
+            Button {
+              iconText: root.activePlayer && root.activePlayer.loopState === 1 ? "󰑘" : "󰑖"
+              foreground: "white"
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY
+              active: root.activePlayer && root.activePlayer.loopState !== 0
+              enabled: root.activePlayer && root.activePlayer.loopSupported
+              opacity: !enabled ? 0.4 : (active ? 1.0 : 0.6)
+              tooltipText: root.mediaService ? root.mediaService.loopLabel(root.activePlayer ? root.activePlayer.loopState : 0) : ""
+              onClicked: if (root.mediaService) root.mediaService.runAction("loop", false, root.mediaService.playerKey(root.activePlayer))
             }
           }
         }
@@ -550,19 +575,75 @@ BarWidget {
             readonly property string sourceTitle: player ? (player.trackTitle || player.identity || player.desktopEntry || "Media source") : "Media source"
             readonly property string sourceDetail: player && player.trackArtist ? player.trackArtist : (player && player.identity ? player.identity : "")
 
+            readonly property var sourceStreams: root.mediaService ? root.mediaService.playbackStreamsForPlayer(player) : []
+            readonly property var sourceSink: sourceStreams.length > 0 ? root.mediaService.sinkForStream(sourceStreams[0]) : null
+            readonly property string sourceSinkName: sourceSink ? String(sourceSink.name) : ""
+            readonly property string sourceSinkLabel: sourceSink && root.mediaService ? root.mediaService.sinkLabel(sourceSink) : ""
+            readonly property bool canRoute: root.mediaService
+              && root.mediaService.sinks.length > 1
+              && sourceStreams.length > 0
+
+            readonly property var sinkOptions: {
+              var list = []
+              if (!root.mediaService) return list
+              var sinks = root.mediaService.sinks
+              for (var i = 0; i < sinks.length; i++)
+                list.push({ value: String(sinks[i].name), label: root.mediaService.sinkLabel(sinks[i]) })
+              return list
+            }
+
+            // Clicking the row body only selects this source (the card and
+            // the highlight follow it) without touching playback: a playing
+            // source keeps playing and the selected one stays paused.
+            // Play/pause happens only through the explicit per-source toggle
+            // (the play icon in the row).
+            function switchToSource() {
+              if (!root.mediaService) return
+              root.mediaService.selectPlayer(root.mediaService.playerKey(player))
+            }
+
+            // Toggles only this source's playback (switching away from the
+            // playing one when this source takes over).
+            function togglePlay() {
+              if (!root.mediaService) return
+              var svc = root.mediaService
+              if (player.isPlaying) {
+                svc.pausePlayer(player)
+                return
+              }
+              svc.selectPlayer(svc.playerKey(player))
+              if (svc.activePlayer && svc.activePlayer !== player && svc.activePlayer.isPlaying)
+                svc.pausePlayer(svc.activePlayer)
+              svc.playPlayer(player)
+            }
+
             width: sourceList.width
-            height: sourceInner.implicitHeight + Style.space(10)
+            height: sourceInner.implicitHeight + (sinkMenu.visible ? sinkMenu.height + Style.space(4) : 0) + Style.space(10)
             radius: Style.spacing.labelGap
             color: selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent"
             borderSpec: selected ? Border.controlSpec("normal", root.bar.foreground, Color.accent) : Border.none()
+
+            // Declared first so the sink button and its option list (later
+            // siblings) receive their own clicks; non-interactive content
+            // passes through to this one.
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.openSinkMenu = ""
+                sourceRow.switchToSource()
+              }
+            }
 
             Row {
               id: sourceInner
               anchors.left: parent.left
               anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.top: parent.top
               anchors.leftMargin: sourceRow.borderLeft + Style.space(8)
               anchors.rightMargin: sourceRow.borderRight + Style.space(8)
+              anchors.topMargin: sourceRow.borderTop + Style.space(5)
               spacing: Style.space(8)
 
               Text {
@@ -573,10 +654,19 @@ BarWidget {
                 width: Style.space(18)
                 horizontalAlignment: Text.AlignHCenter
                 anchors.verticalCenter: parent.verticalCenter
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.openSinkMenu = ""
+                    sourceRow.togglePlay()
+                  }
+                }
               }
 
               Column {
-                width: parent.width - Style.space(26)
+                width: parent.width - Style.space(26) - (sinkButton.visible ? sinkButton.width + Style.space(8) : 0)
                 spacing: Style.space(1)
                 anchors.verticalCenter: parent.verticalCenter
 
@@ -600,13 +690,105 @@ BarWidget {
                   visible: text !== ""
                 }
               }
+
+              BorderSurface {
+                id: sinkButton
+                visible: sourceRow.canRoute
+                width: Style.space(116)
+                height: Style.space(26)
+                radius: Style.cornerRadius
+                anchors.verticalCenter: parent.verticalCenter
+                color: Style.controlFill(false, sinkButtonHover.hovered, root.bar.foreground, Color.accent)
+                borderSpec: Border.controlSpec(sinkButtonHover.hovered ? "hover-cursor" : "normal", root.bar.foreground, Color.accent)
+
+                Text {
+                  anchors.left: parent.left
+                  anchors.right: chevron.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: sinkButton.borderLeft + Style.space(6)
+                  anchors.rightMargin: Style.space(4)
+                  text: sourceRow.sourceSinkLabel || "—"
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  id: chevron
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.rightMargin: sinkButton.borderRight + Style.space(5)
+                  text: "󰅀"
+                  color: Qt.darker(root.bar.foreground, 1.2)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                HoverHandler { id: sinkButtonHover }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var key = root.mediaService ? root.mediaService.playerKey(sourceRow.player) : ""
+                    root.openSinkMenu = root.openSinkMenu === key ? "" : key
+                  }
+                }
+              }
             }
 
-            MouseArea {
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: if (root.mediaService) root.mediaService.selectPlayer(root.mediaService.playerKey(sourceRow.player))
+            Column {
+              id: sinkMenu
+              visible: root.openSinkMenu === (root.mediaService ? root.mediaService.playerKey(sourceRow.player) : "")
+              height: visible ? implicitHeight : 0
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: sourceInner.bottom
+              anchors.topMargin: Style.space(4)
+              anchors.leftMargin: sourceRow.borderLeft + Style.space(8)
+              anchors.rightMargin: sourceRow.borderRight + Style.space(8)
+              spacing: Style.space(2)
+
+              Repeater {
+                width: parent.width
+                model: sourceRow.sinkOptions
+
+                BorderSurface {
+                  required property var modelData
+                  width: parent.width
+                  height: Style.space(24)
+                  radius: Style.spacing.labelGap
+                  color: optionHover.hovered ? Style.hoverFillFor(root.bar.foreground, Color.accent) : "transparent"
+                  borderSpec: Border.none()
+
+                  Text {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(8)
+                    anchors.rightMargin: Style.space(8)
+                    text: modelData.label
+                    color: modelData.value === sourceRow.sourceSinkName ? Color.accent : root.bar.foreground
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: modelData.value === sourceRow.sourceSinkName
+                    elide: Text.ElideRight
+                  }
+
+                  HoverHandler { id: optionHover }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (root.mediaService) root.mediaService.moveStreamsToSink(sourceRow.player, modelData.value)
+                      root.openSinkMenu = ""
+                    }
+                  }
+                }
+              }
             }
           }
         }

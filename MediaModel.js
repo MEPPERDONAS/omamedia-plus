@@ -23,7 +23,23 @@ function canHandleAction(player, action) {
   if (action === "play") return !!(player.canPlay || player.canTogglePlaying)
   if (action === "pause") return !!(player.canPause || player.canTogglePlaying)
   if (action === "playPause") return !!(player.canTogglePlaying || player.canPlay || player.canPause)
+  if (action === "shuffle") return !!player.shuffleSupported
+  if (action === "loop") return !!player.loopSupported
   return false
+}
+
+// MprisLoopState: 0 None, 1 Track, 2 Playlist.
+// None -> Playlist -> Track -> None. Matches how Spotify's own control cycles.
+function nextLoopState(loopState) {
+  if (loopState === 0) return 2
+  if (loopState === 2) return 1
+  return 0
+}
+
+function loopLabel(loopState) {
+  if (loopState === 1) return "Repeat track"
+  if (loopState === 2) return "Repeat playlist"
+  return "Repeat off"
 }
 
 function canCycleSource(player) {
@@ -69,6 +85,56 @@ function playerAppLabel(player) {
   dbus = dbus.replace(/^org\.mpris\.MediaPlayer2\./, "")
   dbus = dbus.replace(/\.instance[0-9]+$/, "")
   return player.desktopEntry || player.identity || dbus
+}
+
+function friendlyDeviceLabel(text) {
+  var label = String(text || "").trim()
+  label = label.replace(/^sof-soundwire\s+/i, "")
+  label = label.replace(/^built-?in audio\s+/i, "")
+  label = label.replace(/\s+Output$/i, "")
+  label = label.replace(/\s+Input$/i, "")
+  label = label.replace(/\bMicrophones\b/g, "Microphone")
+  return label
+}
+
+function sinkLabel(node) {
+  if (!node) return "Unknown"
+  var p = nodeProps(node)
+  var nickname = friendlyDeviceLabel(
+    node.nickname || node.nick || p["node.nick"] || p["device.profile.description"] || "")
+  if (nickname) return nickname
+  return friendlyDeviceLabel(node.description || p["node.description"] || node.name || "Unknown")
+}
+
+function isHeadphones(node) {
+  if (!node) return false
+  var p = nodeProps(node)
+  var blob = String([
+    node.name, node.description, node.nickname,
+    p["device.icon-name"] || "",
+    p["device.product.name"] || "",
+    p["node.description"] || "",
+    p["node.nick"] || ""
+  ].join(" ")).toLowerCase()
+  return blob.indexOf("headphone") !== -1
+    || blob.indexOf("headset") !== -1
+    || blob.indexOf("earbud") !== -1
+    || blob.indexOf("earphone") !== -1
+    || blob.indexOf("airpod") !== -1
+}
+
+function sinkGlyph(node) {
+  if (!node) return "󰓃"
+  if (isHeadphones(node)) return "󰋋"
+  var p = nodeProps(node)
+  var blob = String([
+    node.name, node.description, node.nickname,
+    p["device.icon-name"] || "",
+    p["device.product.name"] || ""
+  ].join(" ")).toLowerCase()
+  if (blob.indexOf("bluetooth") !== -1) return "󰂯"
+  if (blob.indexOf("hdmi") !== -1 || blob.indexOf("display") !== -1) return "󰍹"
+  return "󰓃"
 }
 
 function playerHasPlaybackStream(player, playbackStreams) {
@@ -126,12 +192,18 @@ if (typeof module !== "undefined") {
     hasTrackMetadata: hasTrackMetadata,
     playerCanControl: playerCanControl,
     canHandleAction: canHandleAction,
+    nextLoopState: nextLoopState,
+    loopLabel: loopLabel,
     canCycleSource: canCycleSource,
     nodeProps: nodeProps,
     isPlaybackStream: isPlaybackStream,
     streamLabelKey: streamLabelKey,
     rawStreamLabel: rawStreamLabel,
     playerAppLabel: playerAppLabel,
+    friendlyDeviceLabel: friendlyDeviceLabel,
+    sinkLabel: sinkLabel,
+    isHeadphones: isHeadphones,
+    sinkGlyph: sinkGlyph,
     playerHasPlaybackStream: playerHasPlaybackStream,
     playerKey: playerKey,
     trackSignature: trackSignature,
