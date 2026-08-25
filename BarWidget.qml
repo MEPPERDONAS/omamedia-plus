@@ -16,8 +16,8 @@ BarWidget {
 
   readonly property bool hasMedia: activePlayer !== null && (activePlayer.trackTitle || activePlayer.trackArtist)
   readonly property string playIcon: activePlayer && activePlayer.isPlaying ? "󰏤" : "󰐊"
-  readonly property string title: activePlayer ? (activePlayer.trackTitle || "") : ""
-  readonly property string artist: activePlayer ? (activePlayer.trackArtist || "") : ""
+  readonly property string title: trackTitleFor(activePlayer)
+  readonly property string artist: trackArtistFor(activePlayer)
 
   property bool popupOpen: false
   property string openSinkMenu: ""
@@ -60,13 +60,18 @@ BarWidget {
 
     if (player || fallback) {
       var chosen = player || fallback
-      var app = playerAppName(chosen)
+      var browserInfo = mediaService ? mediaService.browserSourceInfo(chosen) : null
+      var app = browserInfo && browserInfo.app ? browserInfo.app : playerAppName(chosen)
       var label = playerLabel(chosen)
+      var browserLabel = browserInfo && browserInfo.label ? browserInfo.label : ""
       return {
         kind: "player",
         app: app,
-        label: label || app || "Player",
-        icon: resolveIcon(iconCandidates(app, label)),
+        label: browserLabel || label || app || "Player",
+        icon: browserLabel === "YouTube Music"
+          ? ""
+          : resolveIcon(iconCandidates(app, browserLabel || label)),
+        iconGlyph: sourceGlyph(browserLabel || label),
         playing: player ? !!player.isPlaying : true
       }
     }
@@ -108,6 +113,29 @@ BarWidget {
     return player ? (player.identity || player.desktopEntry || "") : ""
   }
 
+  function cleanTrackText(value) {
+    var text = String(value || "").trim()
+    text = text.replace(/^file:\/\//, "")
+    text = text.split("/").pop()
+    return text.replace(/\.(mp3|flac|ogg|opus|wav|m4a|aac|webm)$/i, "")
+  }
+
+  function trackTitleFor(player) {
+    var title = cleanTrackText(player ? player.trackTitle : "")
+    if (!title) return ""
+    if (player && player.trackArtist) return title
+    var separator = title.indexOf(" - ")
+    return separator > 0 ? title.substring(separator + 3).trim() : title
+  }
+
+  function trackArtistFor(player) {
+    var artist = cleanTrackText(player ? player.trackArtist : "")
+    if (artist) return artist
+    var title = cleanTrackText(player ? player.trackTitle : "")
+    var separator = title.indexOf(" - ")
+    return separator > 0 ? title.substring(0, separator).trim() : ""
+  }
+
   function isPlaybackStream(node) {
     if (!node || !node.isStream) return false
     if (node.isSink === true) return true
@@ -139,8 +167,9 @@ BarWidget {
       "google-chrome": ["chrome"],
       "chromium": ["chromium-browser"],
       "firefox": ["firefox-esr"],
-      "youtube music": ["youtube-music"],
-      "youtube-music": ["youtube-music"]
+      "youtube music": ["youtube-music", "youtube"],
+      "youtube-music": ["youtube-music", "youtube"],
+      "youtube": ["youtube"]
     }
     return aliases[String(name || "").trim().toLowerCase()] || []
   }
@@ -154,10 +183,12 @@ BarWidget {
       seen[v] = true
       names.push(v)
     }
-    push(appName)
     push(label)
-    var extra = iconAliases(appName)
+    var extra = iconAliases(label)
     for (var i = 0; i < extra.length; i++) push(extra[i])
+    push(appName)
+    extra = iconAliases(appName)
+    for (var j = 0; j < extra.length; j++) push(extra[j])
     return names
   }
 
@@ -172,6 +203,13 @@ BarWidget {
     return ""
   }
 
+  function sourceGlyph(label) {
+    var value = String(label || "").toLowerCase()
+    if (value.indexOf("youtube music") !== -1) return "󰎆"
+    if (value.indexOf("youtube") !== -1) return "󰗃"
+    return ""
+  }
+
   function focusSource() {
     var s = source
     if (!s || !s.app) return
@@ -182,6 +220,14 @@ BarWidget {
   }
 
   function close() { popupOpen = false }
+
+  function formatTime(seconds) {
+    var totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0))
+    var minutes = Math.floor(totalSeconds / 60)
+    var remainingSeconds = totalSeconds % 60
+    return minutes + ":" + (remainingSeconds < 10 ? "0" : "") + remainingSeconds
+  }
+
   property real maxLabelWidth: 180
 
   Timer {
@@ -219,7 +265,7 @@ BarWidget {
       height: glyph.height
       clip: true
       anchors.verticalCenter: parent.verticalCenter
-      visible: !root.bar.vertical && root.title !== ""
+      visible: !root.bar.vertical && (root.title !== "" || root.artist !== "")
 
       Text {
         id: labelText
@@ -233,12 +279,34 @@ BarWidget {
 
         NumberAnimation on x {
           id: scrollAnim
-          running: labelText.needsScroll && !root.popupOpen && !root.bar.vertical
+          running: labelText.needsScroll && !root.bar.vertical
           loops: Animation.Infinite
           duration: Math.max(6000, labelText.implicitWidth * 25)
           from: scrollClip.width
           to: -labelText.implicitWidth
           easing.type: Easing.Linear
+        }
+
+        onTextChanged: {
+          x = 0
+          if (needsScroll) scrollAnim.restart()
+        }
+
+        onNeedsScrollChanged: {
+          if (needsScroll) scrollAnim.restart()
+          else x = 0
+        }
+
+        Connections {
+          target: root.activePlayer
+          function onTrackTitleChanged() {
+            labelText.x = 0
+            if (labelText.needsScroll) scrollAnim.restart()
+          }
+          function onTrackArtistChanged() {
+            labelText.x = 0
+            if (labelText.needsScroll) scrollAnim.restart()
+          }
         }
       }
     }
@@ -254,7 +322,7 @@ BarWidget {
       if (!root.activePlayer) return
       if (mouse.button === Qt.MiddleButton) {
         if (root.mediaService) root.mediaService.runAction("next", false)
-      } else if (mouse.button === Qt.RightButton) {
+      } else if (mouse.button === Qt.LeftButton) {
         root.popupOpen = !root.popupOpen
       } else {
         if (root.mediaService) root.mediaService.runAction("playPause", false)
@@ -285,8 +353,9 @@ BarWidget {
 
       Item {
         id: bgContainer
+        property real aspectRatio: 16 / 8
         width: parent.width
-        height: bgColumn.implicitHeight + Style.space(20)
+        height: width / aspectRatio
 
         Item {
           id: bgSource
@@ -398,34 +467,27 @@ BarWidget {
             }
           }
 
-          Column {
-            width: parent.width
-            spacing: Style.space(4)
-            visible: root.activePlayer && root.activePlayer.length > 0
-            topPadding: Style.space(6)
+        }
 
-            Rectangle {
-              width: parent.width
-              height: 3
-              radius: 2
-              color: "#33ffffff"
-
-              Rectangle {
-                width: root.activePlayer && root.activePlayer.length > 0
-                  ? parent.width * (root.activePlayer.position / root.activePlayer.length)
-                  : 0
-                height: parent.height
-                radius: 2
-                color: "white"
-              }
-            }
-          }
+        Item {
+          id: mediaControls
+          anchors.horizontalCenter: parent.horizontalCenter
+          anchors.bottom: parent.bottom
+          anchors.bottomMargin: Style.space(10)
+          width: parent.width
+          height: buttonsRow.height + (progressColumn.visible ? progressColumn.implicitHeight + Style.space(2) : 0)
 
           Row {
+            id: buttonsRow
             anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            width: Style.space(170)
+            height: Style.space(34)
             spacing: Style.space(6)
 
             Button {
+              width: Style.space(28)
+              height: Style.space(34)
               iconText: "󰒝"
               foreground: "white"
               horizontalPadding: Style.spacing.controlPaddingX
@@ -438,6 +500,8 @@ BarWidget {
             }
 
             Button {
+              width: Style.space(28)
+              height: Style.space(34)
               iconText: "󰒮"
               foreground: "white"
               horizontalPadding: Style.spacing.controlPaddingX
@@ -448,6 +512,8 @@ BarWidget {
             }
 
             Button {
+              width: Style.space(34)
+              height: Style.space(34)
               iconText: root.activePlayer && root.activePlayer.isPlaying ? "󰏤" : "󰐊"
               foreground: "white"
               horizontalPadding: Style.spacing.panelGap
@@ -459,6 +525,8 @@ BarWidget {
             }
 
             Button {
+              width: Style.space(28)
+              height: Style.space(34)
               iconText: "󰒭"
               foreground: "white"
               horizontalPadding: Style.spacing.controlPaddingX
@@ -469,6 +537,8 @@ BarWidget {
             }
 
             Button {
+              width: Style.space(28)
+              height: Style.space(34)
               iconText: root.activePlayer && root.activePlayer.loopState === 1 ? "󰑘" : "󰑖"
               foreground: "white"
               horizontalPadding: Style.spacing.controlPaddingX
@@ -478,6 +548,105 @@ BarWidget {
               opacity: !enabled ? 0.4 : (active ? 1.0 : 0.6)
               tooltipText: root.mediaService ? root.mediaService.loopLabel(root.activePlayer ? root.activePlayer.loopState : 0) : ""
               onClicked: if (root.mediaService) root.mediaService.runAction("loop", false, root.mediaService.playerKey(root.activePlayer))
+            }
+          }
+
+          Column {
+            id: progressColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: Style.space(10)
+            anchors.rightMargin: Style.space(10)
+            visible: root.activePlayer && root.activePlayer.length > 0
+
+            Rectangle {
+              width: parent.width
+              height: 4
+              radius: 2
+              color: "#33ffffff"
+
+              Rectangle {
+                id: progressFill
+                property real progressRatio: root.activePlayer && root.activePlayer.length > 0
+                  ? Math.max(0, Math.min(1, root.activePlayer.position / root.activePlayer.length))
+                  : 0
+                width: parent.width * progressRatio
+                height: parent.height
+                radius: 2
+                color: "white"
+              }
+
+              Canvas {
+                id: progressWave
+                anchors.left: parent.left
+                width: progressFill.width
+                height: Style.space(8)
+                y: -height
+                clip: true
+                antialiasing: true
+                opacity: 0.5
+                z: 1
+                visible: root.activePlayer && root.activePlayer.isPlaying
+                property real phase: 0
+
+                NumberAnimation on phase {
+                  running: root.activePlayer && root.activePlayer.isPlaying
+                  from: 0
+                  to: Math.PI * 2
+                  duration: 1700
+                  loops: Animation.Infinite
+                }
+
+                onPhaseChanged: requestPaint()
+
+                onPaint: {
+                  var context = getContext("2d")
+                  context.clearRect(0, 0, width, height)
+
+                  function wave(amplitude, length, offset, color) {
+                    context.beginPath()
+                    context.moveTo(0, height)
+                    for (var x = 0; x <= width; x += 2) {
+                      var y = height / 2 + Math.sin((x / length) * Math.PI * 2 + phase + offset) * amplitude
+                      context.lineTo(x, y)
+                    }
+                    context.lineTo(width, height)
+                    context.closePath()
+                    var fade = context.createLinearGradient(0, 0, width, 0)
+                    fade.addColorStop(0, "rgba(255, 255, 255, 0)")
+                    fade.addColorStop(0.14, color)
+                    fade.addColorStop(0.86, color)
+                    fade.addColorStop(1, "rgba(255, 255, 255, 0)")
+                    context.fillStyle = fade
+                    context.fill()
+                  }
+
+                  wave(height * 0.38, Math.max(18, width * 0.7), 0, "rgba(255, 255, 255, 0.9)")
+                  wave(height * 0.28, Math.max(14, width * 0.45), Math.PI, "rgba(255, 255, 255, 0.55)")
+                }
+              }
+            }
+
+            Row {
+              width: parent.width
+              Text {
+                id: elapsedText
+                text: root.formatTime(root.activePlayer ? root.activePlayer.position : 0)
+                color: "#cccccc"
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Item { width: parent.width - elapsedText.implicitWidth - totalText.implicitWidth; height: 1 }
+
+              Text {
+                id: totalText
+                text: root.formatTime(root.activePlayer ? root.activePlayer.length : 0)
+                color: "#cccccc"
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+              }
             }
           }
         }
@@ -510,18 +679,30 @@ BarWidget {
 
             Loader {
               id: sourceIcon
-              active: root.hasSource && root.source.icon !== ""
+              active: root.hasSource
               width: Math.round(Style.font.caption * 1.3)
               height: Math.round(Style.font.caption * 1.3)
               anchors.verticalCenter: parent.verticalCenter
-              sourceComponent: Image {
-                anchors.fill: parent
-                fillMode: Image.PreserveAspectFit
-                sourceSize.width: width * Screen.devicePixelRatio
-                sourceSize.height: height * Screen.devicePixelRatio
-                source: root.source.icon
-                asynchronous: true
-                smooth: true
+              sourceComponent: Item {
+                Image {
+                  anchors.fill: parent
+                  fillMode: Image.PreserveAspectFit
+                  sourceSize.width: width * Screen.devicePixelRatio
+                  sourceSize.height: height * Screen.devicePixelRatio
+                  source: root.source.icon
+                  asynchronous: true
+                  smooth: true
+                  visible: status === Image.Ready
+                }
+
+                Text {
+                  anchors.centerIn: parent
+                  text: root.source.iconGlyph || "󰝚"
+                  color: "white"
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  visible: root.source.icon === "" || parent.children[0].status !== Image.Ready
+                }
               }
             }
 

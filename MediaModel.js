@@ -87,6 +87,96 @@ function playerAppLabel(player) {
   return player.desktopEntry || player.identity || dbus
 }
 
+function browserKey(value) {
+  var key = String(value || "").toLowerCase().trim()
+  key = key.replace(/[^a-z0-9]+/g, "")
+  if (key === "brave" || key === "bravebrowser" || key === "braveorigin") return "brave"
+  if (key === "chrome" || key === "googlechrome" || key === "chromium" || key === "chromiumbrowser") return "chromium"
+  if (key === "firefox" || key === "firefoxesr") return "firefox"
+  if (key === "vivaldi" || key === "vivaldisnapshot") return "vivaldi"
+  if (key === "microsoftedge" || key === "edge" || key === "edgedev") return "edge"
+  if (key === "zen") return "zen"
+  return ""
+}
+
+function browserServiceFromTitle(title) {
+  var value = String(title || "").trim()
+  var separator = value.lastIndexOf(" - ")
+  if (separator <= 0 || separator + 3 >= value.length) return ""
+  var browser = browserKey(value.substring(separator + 3))
+  if (!browser) return ""
+
+  var tabTitle = value.substring(0, separator).trim()
+  var services = [
+    { name: "YouTube Music", pattern: /\byoutube\s+music\b/i },
+    { name: "YouTube", pattern: /\byoutube\b/i },
+    { name: "Spotify", pattern: /\bspotify\b/i },
+    { name: "SoundCloud", pattern: /\bsoundcloud\b/i },
+    { name: "Tidal", pattern: /\btidal\b/i },
+    { name: "Apple Music", pattern: /\bapple\s+music\b/i },
+    { name: "Deezer", pattern: /\bdeezer\b/i }
+  ]
+  for (var i = 0; i < services.length; i++)
+    if (services[i].pattern.test(tabTitle)) return services[i].name
+
+  return ""
+}
+
+function browserSourceFromTitle(title) {
+  var value = String(title || "").trim()
+  var separator = value.lastIndexOf(" - ")
+  if (separator <= 0 || separator + 3 >= value.length) return ""
+  var browser = browserKey(value.substring(separator + 3))
+  if (!browser) return ""
+
+  return browserServiceFromTitle(title) || value.substring(0, separator).trim()
+}
+
+function isBrowserClientForPlayer(client, player) {
+  if (!client || !player) return false
+  var playerBrowser = browserKey(playerAppLabel(player)) || browserKey(player.identity)
+  if (!playerBrowser) return false
+  return playerBrowser === (browserKey(client.class) || browserKey(client.initialClass))
+}
+
+function browserClientForPlayer(player, clients) {
+  if (!player || !Array.isArray(clients)) return null
+  var best = null
+  var bestScore = 0
+  var trackTitle = String(player.trackTitle || "").toLowerCase().trim()
+  var trackArtist = String(player.trackArtist || "").toLowerCase().trim()
+  for (var i = 0; i < clients.length; i++) {
+    var client = clients[i]
+    if (!isBrowserClientForPlayer(client, player)) continue
+    var title = String(client.title || "").toLowerCase()
+    var source = browserSourceFromTitle(client.title)
+    var service = browserServiceFromTitle(client.title)
+    var score = service ? 10 : (source ? 1 : 0)
+    if (trackTitle && title.indexOf(trackTitle) !== -1) score += 100
+    if (trackArtist && title.indexOf(trackArtist) !== -1) score += 50
+    if (score > bestScore) {
+      best = client
+      bestScore = score
+    }
+  }
+  return best
+}
+
+function browserSourceInfo(player, clients) {
+  var client = browserClientForPlayer(player, clients)
+  if (!client) return null
+  var service = browserServiceFromTitle(client.title)
+  return {
+    label: service,
+    app: String(client.class || client.initialClass || "")
+  }
+}
+
+function browserSourceLabel(player, clients) {
+  var info = browserSourceInfo(player, clients)
+  return info ? info.label : ""
+}
+
 function friendlyDeviceLabel(text) {
   var label = String(text || "").trim()
   label = label.replace(/^sof-soundwire\s+/i, "")
@@ -200,6 +290,12 @@ if (typeof module !== "undefined") {
     streamLabelKey: streamLabelKey,
     rawStreamLabel: rawStreamLabel,
     playerAppLabel: playerAppLabel,
+    browserKey: browserKey,
+    browserSourceFromTitle: browserSourceFromTitle,
+    isBrowserClientForPlayer: isBrowserClientForPlayer,
+    browserClientForPlayer: browserClientForPlayer,
+    browserSourceInfo: browserSourceInfo,
+    browserSourceLabel: browserSourceLabel,
     friendlyDeviceLabel: friendlyDeviceLabel,
     sinkLabel: sinkLabel,
     isHeadphones: isHeadphones,

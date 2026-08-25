@@ -17,6 +17,7 @@ Item {
   readonly property var players: Mpris.players ? Mpris.players.values : []
   readonly property var nodes: Pipewire.nodes ? Pipewire.nodes.values : []
   readonly property var links: Pipewire.links ? Pipewire.links.values : []
+  property var windowClients: []
   readonly property var playbackStreams: {
     var list = []
     for (var i = 0; i < nodes.length; i++) {
@@ -95,6 +96,14 @@ Item {
 
   function playerAppLabel(player) {
     return MediaModel.playerAppLabel(player)
+  }
+
+  function browserSourceLabel(player) {
+    return MediaModel.browserSourceLabel(player, windowClients)
+  }
+
+  function browserSourceInfo(player) {
+    return MediaModel.browserSourceInfo(player, windowClients)
   }
 
   function playerHasPlaybackStream(player) {
@@ -622,6 +631,19 @@ Item {
   Component.onCompleted: root.syncPlayingOrder()
   onPlayersChanged: root.syncPlayingOrder()
 
+  function refreshWindowClients() {
+    if (!windowClientsProc.running) windowClientsProc.running = true
+  }
+
+  function updateWindowClients(text) {
+    try {
+      var clients = JSON.parse(String(text || "[]"))
+      windowClients = Array.isArray(clients) ? clients : []
+    } catch (error) {
+      windowClients = []
+    }
+  }
+
   Instantiator {
     model: root.players
     delegate: Connections {
@@ -638,6 +660,15 @@ Item {
     onTriggered: root.flushPendingTrackOsd(false)
   }
 
+  Timer {
+    id: windowClientsTimer
+    interval: 2000
+    repeat: true
+    running: true
+    triggeredOnStart: true
+    onTriggered: root.refreshWindowClients()
+  }
+
   PwObjectTracker { objects: root.playbackStreams }
   PwObjectTracker { objects: root.links }
 
@@ -652,6 +683,15 @@ Item {
         root.pendingMove = null
         root.moveSinkInputs(move, text)
       }
+    }
+  }
+
+  Process {
+    id: windowClientsProc
+    command: ["hyprctl", "clients", "-j"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.updateWindowClients(text)
     }
   }
 
